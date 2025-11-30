@@ -6,59 +6,77 @@ from io import BytesIO
 from openpyxl import Workbook
 
 st.set_page_config(page_title="Shift PDF → Excel Converter", layout="centered")
-
 st.title("ממיר דו\"ח משמרות לקובץ אקסל")
-
-st.write("העלה קובץ PDF של המשמרות והכנס את שם העובד")
 
 worker_name = st.text_input("שם העובד")
 uploaded_pdf = st.file_uploader("העלאת קובץ PDF", type=["pdf"])
 
-def parse_pdf(pdf_file):
-    text = ""
-    tables = []
 
+def extract_text_lines(pdf_file):
+    all_lines = []
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
-            text += page.extract_text() + "\n"
-            t = page.extract_tables()
-            for tbl in t:
-                if tbl:
-                    tables.extend(tbl)
+            text = page.extract_text()
+            if text:
+                for line in text.split("\n"):
+                    clean = line.strip()
+                    if clean:
+                        all_lines.append(clean)
+    return all_lines
 
-    return text, tables
 
-def extract_header_info(text):
-    # Phone number
-    phone_match = re.search(r"05\d{8}", text)
-    phone = phone_match.group(0) if phone_match else "לא נמצא"
+def extract_header_info(lines):
+    phone = "לא נמצא"
+    month = "חודש לא ידוע"
 
-    # Month title, e.g. “משמרות נובמבר 2025”
-    month_match = re.search(r"משמרות\s+\S+\s+\d{4}", text)
-    month_title = month_match.group(0) if month_match else "חודש לא ידוע"
+    for line in lines:
+        if re.fullmatch(r"05\d{8}", line):
+            phone = line
+        if line.startswith("משמרות "):
+            month = line
 
-    return phone, month_title
+    return phone, month
 
-def clean_table_rows(rows):
-    clean = []
-    for r in rows:
-        if len(r) >= 4 and all(r):
-            week, shift, date, hours = r[0], r[1], r[2], r[3]
-            # Accept only valid hour rows
-            if re.search(r"\d", str(hours)):
-                clean.append([week, shift, date, hours])
-    return clean
+
+def extract_shifts(lines):
+    shifts = []
+    current = []
+
+    # A valid shift item is detected by hour line: a pure number
+    for line in lines:
+        if re.fullmatch(r"\d{1,2}", line):  # hours
+            current.append(line)
+            if len(current) == 4:
+                shifts.append(current)
+                current = []
+        else:
+            # collect lines until 4 elements
+            if len(current) < 3:  
+                current.append(line)
+            else:
+                # if 3 items but next is not hours, reset
+                current = []
+
+    # Clean and format
+    cleaned = []
+    for s in shifts:
+        if len(s) == 4:
+            week, shift_type, date, hours = s
+            cleaned.append([week, shift_type, date, hours])
+
+    return cleaned
+
 
 if uploaded_pdf and worker_name:
-    text, raw_rows = parse_pdf(uploaded_pdf)
-    phone, month_title = extract_header_info(text)
+    lines = extract_text_lines(uploaded_pdf)
+    phone, month_title = extract_header_info(lines)
+    shift_rows = extract_shifts(lines)
 
-    cleaned = clean_table_rows(raw_rows)
-
-    df = pd.DataFrame(cleaned, columns=["מספר שבוע", "סוג משמרת", "תאריך", "כמות שעות"])
+    df = pd.DataFrame(shift_rows, columns=["מספר שבוע", "סוג משמרת", "תאריך", "כמות שעות"])
+    df["כמות שעות"] = df["כמות שעות"].astype(int)
 
     total_shifts = len(df)
-    total_hours = df["כמות שעות"].astype(int).sum()
+    total_hours = df["כמות שעות"].sum()
 
     # Create Excel
     output = BytesIO()
@@ -89,4 +107,5 @@ if uploaded_pdf and worker_name:
         file_name=f"{month_title}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
 
